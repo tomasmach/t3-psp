@@ -4,13 +4,14 @@
 extern crate alloc;
 mod audio_stream;
 mod diagnostics;
+mod input;
 mod model;
 mod network;
 mod stream_queue;
 mod ui;
 mod views;
 use alloc::{format, string::String, vec::Vec};
-use model::{Thread, ThreadViews, decode_field, parse_detail, parse_threads};
+use model::{Navigation, Thread, ThreadViews, decode_field, parse_detail, parse_threads};
 use psp::sys::*;
 use ui::Frame;
 psp::module!("T3 PSP", 0, 2);
@@ -22,21 +23,69 @@ fn pause() {
         sceKernelDelayThread(16_000);
     }
 }
-fn pressed(previous: &mut CtrlButtons) -> CtrlButtons {
+struct Press {
+    buttons: CtrlButtons,
+    scroll: isize,
+}
+
+impl Press {
+    fn contains(&self, button: CtrlButtons) -> bool {
+        self.buttons.contains(button)
+    }
+
+    fn movement(&self, page: usize) -> isize {
+        if self.contains(CtrlButtons::UP) {
+            -1
+        } else if self.contains(CtrlButtons::DOWN) {
+            1
+        } else if self.contains(CtrlButtons::LEFT) {
+            -(page as isize)
+        } else if self.contains(CtrlButtons::RIGHT) {
+            page as isize
+        } else {
+            self.scroll
+        }
+    }
+}
+
+fn pressed(previous: &mut input::Input) -> Press {
+    pressed_with_repeat(previous, CtrlButtons::empty())
+}
+
+fn pressed_with_repeat(previous: &mut input::Input, extra_repeat: CtrlButtons) -> Press {
+    let mut pad = SceCtrlData::default();
+    if unsafe { sceCtrlPeekBufferPositive(&mut pad, 1) } <= 0 {
+        return Press {
+            buttons: CtrlButtons::empty(),
+            scroll: 0,
+        };
+    }
+    let directions = CtrlButtons::UP | CtrlButtons::DOWN | CtrlButtons::LEFT | CtrlButtons::RIGHT;
+    let (buttons, scroll) = previous.sample(
+        pad.buttons.bits(),
+        (directions | extra_repeat).bits(),
+        pad.ly,
+        now(),
+    );
+    Press {
+        buttons: CtrlButtons::from_bits_truncate(buttons),
+        scroll,
+    }
+}
+
+fn suppress_input(previous: &mut input::Input) {
     let mut pad = SceCtrlData::default();
     unsafe {
-        sceCtrlReadBufferPositive(&mut pad, 1);
+        sceCtrlPeekBufferPositive(&mut pad, 1);
     }
-    let result = pad.buttons & !*previous;
-    *previous = pad.buttons;
-    result
+    previous.suppress(pad.buttons.bits());
 }
 fn connection(online: bool) -> String {
     let battery = unsafe { scePowerGetBatteryLifePercent() };
     let status = if online {
-        "Připojeno"
+        "Connected"
     } else {
-        "Bez spojení s bránou"
+        "Gateway offline"
     };
     if (0..=100).contains(&battery) {
         format!("{status}  •  {battery} %")
@@ -49,16 +98,16 @@ fn notice(frame: &mut Frame, title: &str, message: &str, online: bool) {
         frame,
         title,
         message,
-        "Čekej prosím…",
-        "HOME Ukončit",
+        "Please wait…",
+        "HOME Exit",
         &connection(online),
     );
     frame.present();
 }
-fn dialog(frame: &mut Frame, title: &str, message: &str, previous: &mut CtrlButtons) {
+fn dialog(frame: &mut Frame, title: &str, message: &str, previous: &mut input::Input) {
     let lines = ui::wrap_text(message, 452);
     let mut offset = 0usize;
-    pressed(previous);
+    suppress_input(previous);
     loop {
         frame.clear();
         frame.header(title, "", "T3 PSP");
@@ -66,33 +115,41 @@ fn dialog(frame: &mut Frame, title: &str, message: &str, previous: &mut CtrlButt
             frame.text(12, 62 + row as i32 * 18, line, ui::TEXT);
         }
         frame.scrollbar(offset, lines.len(), 9);
-        frame.footer("× Zpět    ↑↓ Posun", "HOME Ukončit");
+        frame.footer("○ Back    ↑↓ / Analog Scroll", "←→ Page    × OK");
         frame.present();
         loop {
             let buttons = pressed(previous);
-            if buttons.contains(CtrlButtons::CROSS) {
+            if buttons.contains(CtrlButtons::CIRCLE) || buttons.contains(CtrlButtons::CROSS) {
+                suppress_input(previous);
                 return;
             }
-            if buttons.contains(CtrlButtons::UP) {
-                offset = offset.saturating_sub(4);
-                break;
-            }
-            if buttons.contains(CtrlButtons::DOWN) {
-                offset = (offset + 4).min(lines.len().saturating_sub(9));
+            let movement = buttons.movement(9);
+            if movement != 0 {
+                offset = offset
+                    .saturating_add_signed(movement)
+                    .min(lines.len().saturating_sub(9));
                 break;
             }
             pause();
         }
     }
 }
-fn peek_pressed(previous: &mut CtrlButtons) -> CtrlButtons {
-    let mut pad = SceCtrlData::default();
-    unsafe {
-        sceCtrlPeekBufferPositive(&mut pad, 1);
+fn confirm_stop(frame: &mut Frame, thread: &Thread, previous: &mut input::Input) -> bool {
+    views::stop_confirmation(frame, thread);
+    frame.present();
+    suppress_input(previous);
+    loop {
+        let buttons = pressed(previous);
+        if buttons.contains(CtrlButtons::CIRCLE) {
+            suppress_input(previous);
+            return false;
+        }
+        if buttons.contains(CtrlButtons::CROSS) {
+            suppress_input(previous);
+            return true;
+        }
+        pause();
     }
-    let result = pad.buttons & !*previous;
-    *previous = pad.buttons;
-    result
 }
 
 fn cancel_recording(config: &network::Config, id: &str) {
@@ -104,15 +161,15 @@ fn recording(
     frame: &mut Frame,
     config: &network::Config,
     thread: &Thread,
-    previous: &mut CtrlButtons,
+    previous: &mut input::Input,
     online: &mut bool,
 ) -> Result<Option<String>, String> {
     if network::disconnected()? {
         *online = false;
-        notice(frame, "Wi-Fi", "Obnovuji připojení…", false);
+        notice(frame, "Wi-Fi", "Reconnecting…", false);
         network::connect(config)?;
     }
-    notice(frame, &thread.title, "Připravuji nahrávání…", *online);
+    notice(frame, &thread.title, "Preparing to record…", *online);
     let started = network::request(config, "/v1/recordings", &[], true);
     *online = started.is_ok();
     let response = started?;
@@ -124,7 +181,7 @@ fn recording(
                 && id.len() <= 100
                 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
         })
-        .ok_or_else(|| String::from("Brána nevrátila platné ID nahrávky."))?;
+        .ok_or_else(|| String::from("The gateway returned an invalid recording ID."))?;
     let mut session = match audio_stream::Session::start(config, id) {
         Ok(session) => session,
         Err(error) => {
@@ -135,7 +192,7 @@ fn recording(
     let mut cancelled = false;
     let mut failure = None;
     let mut last_draw = 0;
-    peek_pressed(previous);
+    suppress_input(previous);
     loop {
         if let Err(error) = session.tick() {
             if failure.is_none() {
@@ -143,7 +200,7 @@ fn recording(
             }
             session.cancel();
         }
-        let buttons = peek_pressed(previous);
+        let buttons = pressed(previous);
         if buttons.contains(CtrlButtons::CIRCLE) {
             cancelled = true;
             session.cancel();
@@ -158,10 +215,10 @@ fn recording(
             if let Some(error) = &failure {
                 views::notice(
                     frame,
-                    "Nahrávání selhalo",
+                    "Recording failed",
                     error,
-                    "HOME Ukončit",
-                    "Čekám na uvolnění mikrofonu a spojení.",
+                    "HOME Exit",
+                    "Waiting for the microphone and connection to close.",
                     &connection(*online),
                 );
             } else {
@@ -185,14 +242,19 @@ fn recording(
     }
     drop(session);
     if cancelled || failure.is_some() {
-        notice(frame, &thread.title, "Ruším nahrávku na počítači…", *online);
+        notice(
+            frame,
+            &thread.title,
+            "Cancelling the recording on desktop…",
+            *online,
+        );
         cancel_recording(config, id);
         return match failure {
             Some(error) => Err(error),
             None => Ok(None),
         };
     }
-    notice(frame, &thread.title, "Přepisuji na počítači…", *online);
+    notice(frame, &thread.title, "Transcribing on desktop…", *online);
     let finish = network::request(config, &format!("/v1/recordings/{id}/finish"), &[], true);
     *online = finish.is_ok();
     if let Err(error) = finish {
@@ -202,10 +264,10 @@ fn recording(
     let started = now();
     let mut poll_at = 0;
     let mut draw_at = 0;
-    peek_pressed(previous);
+    suppress_input(previous);
     loop {
-        if peek_pressed(previous).contains(CtrlButtons::CIRCLE) {
-            notice(frame, &thread.title, "Ruším přepis…", *online);
+        if pressed(previous).contains(CtrlButtons::CIRCLE) {
+            notice(frame, &thread.title, "Cancelling transcription…", *online);
             cancel_recording(config, id);
             return Ok(None);
         }
@@ -219,7 +281,7 @@ fn recording(
                         .lines()
                         .find_map(|line| line.strip_prefix("TEXT\t"))
                         .map(decode_field)
-                        .ok_or_else(|| String::from("Brána nevrátila přepis."));
+                        .ok_or_else(|| String::from("The gateway returned no transcript."));
                     cancel_recording(config, id);
                     return result.map(Some);
                 }
@@ -235,11 +297,11 @@ fn recording(
                 frame,
                 &thread.title,
                 &format!(
-                    "Přepisuji na počítači…\n{}",
+                    "Transcribing on desktop…\n{}",
                     views::duration(((now() - started) / 1_000_000) as u64)
                 ),
-                "○ Zrušit přepis",
-                "Prompt zatím nebyl odeslaný.",
+                "○ Cancel transcription",
+                "The prompt has not been sent.",
                 &connection(*online),
             );
             frame.present();
@@ -254,15 +316,16 @@ fn compose(
     config: &network::Config,
     thread: &Thread,
     draft: &mut String,
-    previous: &mut CtrlButtons,
+    previous: &mut input::Input,
     mut voice: bool,
     mut online: bool,
 ) {
     let mut key = 0usize;
     let mut scroll = 0usize;
-    let mut edit = false;
+    let mut edit = !voice && draft.is_empty();
     let mut uppercase = false;
     let mut dirty = true;
+    suppress_input(previous);
     loop {
         if voice {
             voice = false;
@@ -276,17 +339,17 @@ fn compose(
             if let Err(error) = result {
                 dialog(
                     frame,
-                    "Nahrávka se nepodařila",
-                    &format!("{error}\nKoncept zůstal zachovaný."),
+                    "Recording failed",
+                    &format!("{error}\nYour draft was kept."),
                     previous,
                 );
             }
-            scroll = ui::wrap_text(draft, 452)
+            scroll = ui::wrap_text(draft, views::DRAFT_WIDTH)
                 .len()
                 .saturating_sub(views::DRAFT_ROWS);
             dirty = true;
             // Sending after recording/network waits needs a fresh START.
-            pressed(previous);
+            suppress_input(previous);
         }
         if dirty {
             views::composer(
@@ -302,37 +365,46 @@ fn compose(
             frame.present();
             dirty = false;
         }
-        let buttons = pressed(previous);
+        let buttons = pressed_with_repeat(
+            previous,
+            if edit {
+                CtrlButtons::SQUARE
+            } else {
+                CtrlButtons::empty()
+            },
+        );
         if buttons.contains(CtrlButtons::CIRCLE) {
             if !edit {
+                suppress_input(previous);
                 return;
             }
             edit = false;
             scroll = scroll.min(
-                ui::wrap_text(draft, 452)
+                ui::wrap_text(draft, views::DRAFT_WIDTH)
                     .len()
                     .saturating_sub(views::DRAFT_ROWS),
             );
             dirty = true;
+            suppress_input(previous);
         } else if edit {
             let count = views::KEYS.len();
             if buttons.contains(CtrlButtons::LEFT) {
-                key = (key + count - 1) % count;
+                key = input::move_key(key, count, -1, 0);
                 dirty = true;
             }
             if buttons.contains(CtrlButtons::RIGHT) {
-                key = (key + 1) % count;
+                key = input::move_key(key, count, 1, 0);
                 dirty = true;
             }
             if buttons.contains(CtrlButtons::UP) {
-                key = (key + count - 7) % count;
+                key = input::move_key(key, count, 0, -1);
                 dirty = true;
             }
             if buttons.contains(CtrlButtons::DOWN) {
-                key = (key + 7) % count;
+                key = input::move_key(key, count, 0, 1);
                 dirty = true;
             }
-            if buttons.contains(CtrlButtons::SELECT) {
+            if buttons.contains(CtrlButtons::TRIANGLE) {
                 uppercase = !uppercase;
                 dirty = true;
             }
@@ -343,30 +415,44 @@ fn compose(
                 } else {
                     ch
                 });
-                scroll = ui::wrap_text(draft, 452).len().saturating_sub(2);
+                scroll = ui::wrap_text(draft, views::DRAFT_WIDTH)
+                    .len()
+                    .saturating_sub(2);
                 dirty = true;
             }
-            if buttons.contains(CtrlButtons::TRIANGLE) {
+            if buttons.contains(CtrlButtons::SQUARE) {
                 draft.pop();
-                scroll = ui::wrap_text(draft, 452).len().saturating_sub(2);
+                scroll = ui::wrap_text(draft, views::DRAFT_WIDTH)
+                    .len()
+                    .saturating_sub(2);
                 dirty = true;
             }
-            if buttons.contains(CtrlButtons::LTRIGGER) {
-                scroll = scroll.saturating_sub(2);
-                dirty = true;
-            }
-            if buttons.contains(CtrlButtons::RTRIGGER) {
-                scroll = (scroll + 2).min(ui::wrap_text(draft, 452).len().saturating_sub(2));
+            let movement = if buttons.contains(CtrlButtons::LTRIGGER) {
+                -2
+            } else if buttons.contains(CtrlButtons::RTRIGGER) {
+                2
+            } else {
+                buttons.scroll
+            };
+            if movement != 0 {
+                scroll = scroll.saturating_add_signed(movement).min(
+                    ui::wrap_text(draft, views::DRAFT_WIDTH)
+                        .len()
+                        .saturating_sub(2),
+                );
                 dirty = true;
             }
         } else if buttons.contains(CtrlButtons::SQUARE) {
             voice = true;
         } else if buttons.contains(CtrlButtons::CROSS) {
             edit = true;
-            scroll = ui::wrap_text(draft, 452).len().saturating_sub(2);
+            scroll = ui::wrap_text(draft, views::DRAFT_WIDTH)
+                .len()
+                .saturating_sub(2);
             dirty = true;
+            suppress_input(previous);
         } else if buttons.contains(CtrlButtons::START) && !draft.trim().is_empty() {
-            notice(frame, &thread.title, "Odesílám prompt…", online);
+            notice(frame, &thread.title, "Sending prompt…", online);
             match network::request(
                 config,
                 &format!("/v1/threads/{}/prompt", thread.id),
@@ -375,15 +461,16 @@ fn compose(
             ) {
                 Ok(_) => {
                     draft.clear();
+                    suppress_input(previous);
                     return;
                 }
                 Err(error) => {
                     online = false;
                     dialog(
                         frame,
-                        "Odeslání není potvrzené",
+                        "Delivery not confirmed",
                         &format!(
-                            "{error}\nPřed opakováním zkontroluj thread. Prompt mohl dorazit. Koncept zůstal zachovaný."
+                            "{error}\nCheck the thread before trying again. The prompt may have arrived. Your draft was kept."
                         ),
                         previous,
                     );
@@ -391,13 +478,10 @@ fn compose(
                 }
             }
         } else {
-            if buttons.contains(CtrlButtons::UP) {
-                scroll = scroll.saturating_sub(4);
-                dirty = true;
-            }
-            if buttons.contains(CtrlButtons::DOWN) {
-                scroll = (scroll + 4).min(
-                    ui::wrap_text(draft, 452)
+            let movement = buttons.movement(views::DRAFT_ROWS);
+            if movement != 0 {
+                scroll = scroll.saturating_add_signed(movement).min(
+                    ui::wrap_text(draft, views::DRAFT_WIDTH)
                         .len()
                         .saturating_sub(views::DRAFT_ROWS),
                 );
@@ -407,49 +491,61 @@ fn compose(
         pause();
     }
 }
-fn select_profile(frame: &mut Frame, config: &mut network::Config) -> Result<(), String> {
+fn select_profile(
+    frame: &mut Frame,
+    config: &mut network::Config,
+    can_cancel: bool,
+) -> Result<bool, String> {
     let profiles = network::profiles();
     if profiles.is_empty() {
         return Err(String::from(
-            "V PSP nejsou uložené Wi-Fi sítě. Nejdřív vytvoř připojení v nastavení PSP.",
+            "No saved Wi-Fi profiles. Create a connection in PSP Network Settings first.",
         ));
     }
     let mut selected = profiles
         .iter()
         .position(|p| p.id == config.profile)
         .unwrap_or(0);
-    let mut previous = CtrlButtons::empty();
-    pressed(&mut previous);
+    let mut previous = input::Input::default();
+    suppress_input(&mut previous);
     let mut dirty = true;
     loop {
         if dirty {
             frame.clear();
             frame.header(
-                "Vyber Wi-Fi",
+                "Select Wi-Fi",
                 &format!("{} / {}", selected + 1, profiles.len()),
-                "Nepřipojeno",
+                "T3 PSP",
             );
             for (row, profile) in profiles.iter().skip(selected / 4 * 4).take(4).enumerate() {
                 let y = 56 + row as i32 * 43;
                 if selected % 4 == row {
-                    frame.rect(0, y, 480, 43, ui::PANEL);
-                    frame.rect(0, y, 3, 43, ui::ACCENT);
+                    frame.outline(8, y + 1, 464, 41, 6, ui::rgb(0x737373), ui::SELECTED);
                 }
-                frame.text(11, y + 3, &ui::ellipsis(&profile.name, 450), ui::TEXT);
-                frame.small(11, y + 23, &ui::ellipsis(&profile.ssid, 450), ui::MUTED);
+                frame.text(18, y + 3, &ui::ellipsis(&profile.name, 438), ui::TEXT);
+                frame.small(18, y + 23, &ui::ellipsis(&profile.ssid, 438), ui::MUTED);
             }
             frame.scrollbar(selected / 4 * 4, profiles.len(), 4);
-            frame.footer("↑↓ Vybrat    × Připojit", "HOME Ukončit");
+            frame.footer(
+                "↑↓ / Analog Select    × Connect",
+                if can_cancel {
+                    "←→ Page    ○ Back"
+                } else {
+                    "←→ Page    HOME Exit"
+                },
+            );
             frame.present();
             dirty = false;
         }
         let buttons = pressed(&mut previous);
-        if buttons.contains(CtrlButtons::UP) {
-            selected = selected.saturating_sub(1);
-            dirty = true;
+        if can_cancel && buttons.contains(CtrlButtons::CIRCLE) {
+            return Ok(false);
         }
-        if buttons.contains(CtrlButtons::DOWN) {
-            selected = (selected + 1).min(profiles.len() - 1);
+        let movement = buttons.movement(4);
+        if movement != 0 {
+            selected = selected
+                .saturating_add_signed(movement)
+                .min(profiles.len() - 1);
             dirty = true;
         }
         if buttons.contains(CtrlButtons::CROSS) {
@@ -457,10 +553,10 @@ fn select_profile(frame: &mut Frame, config: &mut network::Config) -> Result<(),
             notice(
                 frame,
                 "Wi-Fi",
-                &format!("Připojuji k {}…", profiles[selected].ssid),
+                &format!("Connecting to {}…", profiles[selected].ssid),
                 false,
             );
-            return Ok(());
+            return Ok(true);
         }
         pause();
     }
@@ -470,13 +566,12 @@ fn run(
     config: &mut network::Config,
     drafts: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
-    notice(frame, "Wi-Fi", "Načítám síť…", false);
+    notice(frame, "Wi-Fi", "Initializing network…", false);
     network::init(config)?;
-    select_profile(frame, config)?;
+    select_profile(frame, config, false)?;
     network::connect(config)?;
     let mut threads: Vec<Thread> = Vec::new();
-    let mut selected = 0usize;
-    let mut opened: Option<Thread> = None;
+    let mut navigation = Navigation::default();
     let mut detail = model::Detail::default();
     let mut messages = Vec::new();
     let mut activities = Vec::new();
@@ -484,27 +579,31 @@ fn run(
     let mut pending_messages = false;
     let mut pending_activities = false;
     let mut error = String::new();
-    let mut previous = CtrlButtons::empty();
-    pressed(&mut previous);
+    let mut previous = input::Input::default();
+    suppress_input(&mut previous);
     let mut refresh_at = 0;
     let mut reconnect_at = 0;
     let mut dirty = true;
     loop {
         if now() >= refresh_at {
-            let path = opened
-                .as_ref()
-                .map(|t| format!("/v1/threads/{}?projectNames=1", t.id))
-                .unwrap_or_else(|| String::from("/v1/threads?projectNames=1"));
+            let path = if navigation.showing_threads() {
+                String::from("/v1/threads?projectNames=1")
+            } else {
+                format!(
+                    "/v1/threads/{}?projectNames=1",
+                    navigation.opened.as_ref().unwrap().id
+                )
+            };
             // Only reconnect outside recording/upload. Never replay a prompt POST.
             let response = match network::disconnected() {
                 Ok(true) if now() >= reconnect_at => {
-                    notice(frame, "Wi-Fi", "Spojení vypadlo. Připojuji znovu…", false);
+                    notice(frame, "Wi-Fi", "Connection lost. Reconnecting…", false);
                     let result = network::connect(config);
                     reconnect_at = now() + 30_000_000;
                     dirty = true;
                     result.and_then(|()| network::request(config, &path, &[], false))
                 }
-                Ok(true) => Err(String::from("Wi-Fi je odpojená. SELECT: připojit znovu.")),
+                Ok(true) => Err(String::from("Wi-Fi disconnected. SELECT: reconnect.")),
                 Ok(false) => network::request(config, &path, &[], false),
                 Err(error) => Err(error),
             };
@@ -512,7 +611,11 @@ fn run(
                 Ok(response) => {
                     dirty |= !error.is_empty();
                     error.clear();
-                    if let Some(thread) = &mut opened {
+                    if navigation.showing_threads() {
+                        let next = parse_threads(&response);
+                        dirty |= next != threads;
+                        navigation.replace_threads(&mut threads, next);
+                    } else if let Some(thread) = &mut navigation.opened {
                         if let Some(updated) = parse_threads(&response).into_iter().next() {
                             dirty |= *thread != updated;
                             *thread = updated;
@@ -534,14 +637,6 @@ fn run(
                             );
                             dirty = true;
                         }
-                    } else {
-                        let old_id = threads.get(selected).map(|thread| thread.id.clone());
-                        let next = parse_threads(&response);
-                        dirty |= next != threads;
-                        threads = next;
-                        selected = old_id
-                            .and_then(|id| threads.iter().position(|t| t.id == id))
-                            .unwrap_or(0);
                     }
                 }
                 Err(message) => {
@@ -552,7 +647,7 @@ fn run(
             refresh_at = now() + 2_000_000;
         }
         if dirty {
-            if let Some(thread) = &opened {
+            if let Some(thread) = &navigation.opened {
                 views::conversation(
                     frame,
                     thread,
@@ -571,12 +666,20 @@ fn run(
                     } else {
                         pending_messages
                     },
+                    drafts
+                        .iter()
+                        .find(|(id, _)| id == &thread.id)
+                        .map(|(_, draft)| draft.as_str())
+                        .unwrap_or(""),
                 );
+                if navigation.sidebar_open {
+                    views::thread_drawer(frame, &threads, navigation.selected, drafts, &error);
+                }
             } else {
                 views::thread_list(
                     frame,
                     &threads,
-                    selected,
+                    navigation.selected,
                     drafts,
                     &connection(error.is_empty()),
                     &error,
@@ -587,23 +690,56 @@ fn run(
         }
         let buttons = pressed(&mut previous);
         if buttons.contains(CtrlButtons::SELECT) {
-            match select_profile(frame, config).and_then(|()| network::connect(config)) {
-                Ok(()) => {
+            match select_profile(frame, config, true).and_then(|connect| {
+                if connect {
+                    network::connect(config)?;
+                }
+                Ok(connect)
+            }) {
+                Ok(true) => {
                     error.clear();
                     refresh_at = 0;
                 }
+                Ok(false) => {}
                 Err(message) => {
-                    dialog(frame, "Připojení se nepodařilo", &message, &mut previous);
+                    dialog(frame, "Connection failed", &message, &mut previous);
                     error = message;
                 }
             }
-            pressed(&mut previous);
+            suppress_input(&mut previous);
             dirty = true;
             continue;
         }
-        if let Some(thread) = opened.clone() {
+        if navigation.showing_threads() {
             if buttons.contains(CtrlButtons::CIRCLE) {
-                opened = None;
+                navigation.back();
+                suppress_input(&mut previous);
+                refresh_at = 0;
+                dirty = true;
+            } else {
+                let movement = buttons.movement(4);
+                if movement != 0 {
+                    navigation.select(movement, threads.len());
+                    dirty = true;
+                }
+                if buttons.contains(CtrlButtons::CROSS) {
+                    if navigation.open_selected(&threads) {
+                        detail = model::Detail::default();
+                        messages.clear();
+                        activities.clear();
+                        viewport = ThreadViews::default();
+                        pending_messages = false;
+                        pending_activities = false;
+                    }
+                    refresh_at = 0;
+                    dirty = true;
+                    suppress_input(&mut previous);
+                }
+            }
+        } else if let Some(thread) = navigation.opened.clone() {
+            if buttons.contains(CtrlButtons::CIRCLE) {
+                navigation.back();
+                suppress_input(&mut previous);
                 refresh_at = 0;
                 dirty = true;
             } else if buttons.contains(CtrlButtons::CROSS) || buttons.contains(CtrlButtons::SQUARE)
@@ -628,9 +764,13 @@ fn run(
                 dirty = true;
                 continue;
             } else if buttons.contains(CtrlButtons::START)
-                && previous.contains(CtrlButtons::TRIANGLE)
+                && matches!(thread.status.as_str(), "running" | "waiting")
             {
-                notice(frame, &thread.title, "Žádám o přerušení…", error.is_empty());
+                if !confirm_stop(frame, &thread, &mut previous) {
+                    dirty = true;
+                    continue;
+                }
+                notice(frame, &thread.title, "Requesting stop…", error.is_empty());
                 match network::request(
                     config,
                     &format!("/v1/threads/{}/interrupt", thread.id),
@@ -639,18 +779,19 @@ fn run(
                 ) {
                     Ok(_) => dialog(
                         frame,
-                        "Přerušení",
-                        "Požadavek byl přijat. Stav běhu se aktualizuje po potvrzení agentem.",
+                        "Stop requested",
+                        "Stop requested. The status will update when the agent confirms it.",
                         &mut previous,
                     ),
-                    Err(message) => {
-                        dialog(frame, "Přerušení se nepodařilo", &message, &mut previous)
-                    }
+                    Err(message) => dialog(frame, "Stop request failed", &message, &mut previous),
                 }
                 refresh_at = 0;
                 dirty = true;
             } else if buttons.contains(CtrlButtons::LTRIGGER) {
-                viewport.toggle();
+                viewport.activity = false;
+                dirty = true;
+            } else if buttons.contains(CtrlButtons::RTRIGGER) {
+                viewport.activity = true;
                 dirty = true;
             } else {
                 let (total, visible) = if viewport.activity {
@@ -658,15 +799,12 @@ fn run(
                 } else {
                     (messages.len(), views::MESSAGE_ROWS)
                 };
-                if buttons.contains(CtrlButtons::UP) {
-                    viewport.current_mut().move_by(-3, total, visible);
+                let movement = buttons.movement(visible);
+                if movement != 0 {
+                    viewport.current_mut().move_by(movement, total, visible);
                     dirty = true;
                 }
-                if buttons.contains(CtrlButtons::DOWN) {
-                    viewport.current_mut().move_by(3, total, visible);
-                    dirty = true;
-                }
-                if buttons.contains(CtrlButtons::RTRIGGER) {
+                if buttons.contains(CtrlButtons::TRIANGLE) {
                     viewport.current_mut().follow = true;
                     if viewport.activity {
                         pending_activities = views::refresh_content(
@@ -686,26 +824,6 @@ fn run(
                     dirty = true;
                 }
             }
-        } else {
-            if buttons.contains(CtrlButtons::UP) {
-                selected = selected.saturating_sub(1);
-                dirty = true;
-            }
-            if buttons.contains(CtrlButtons::DOWN) {
-                selected = (selected + 1).min(threads.len().saturating_sub(1));
-                dirty = true;
-            }
-            if buttons.contains(CtrlButtons::CROSS) {
-                opened = threads.get(selected).cloned();
-                detail = model::Detail::default();
-                messages.clear();
-                activities.clear();
-                viewport = ThreadViews::default();
-                pending_messages = false;
-                pending_activities = false;
-                refresh_at = 0;
-                dirty = true;
-            }
         }
         pause();
     }
@@ -714,20 +832,20 @@ fn psp_main() {
     psp::enable_home_button();
     unsafe {
         sceCtrlSetSamplingCycle(0);
-        sceCtrlSetSamplingMode(CtrlMode::Digital);
+        sceCtrlSetSamplingMode(CtrlMode::Analog);
     }
     let mut frame = Frame::new();
-    notice(&mut frame, "T3 PSP", "Spouštím…", false);
+    notice(&mut frame, "T3 PSP", "Starting…", false);
     let mut drafts = Vec::new();
     loop {
         if let Err(error) =
             network::load_config().and_then(|mut config| run(&mut frame, &mut config, &mut drafts))
         {
-            let mut previous = CtrlButtons::empty();
+            let mut previous = input::Input::default();
             dialog(
                 &mut frame,
-                "T3 PSP: chyba",
-                &format!("{error}\n\n× Zkusit znovu"),
+                "T3 PSP: error",
+                &format!("{error}\n\n× Try again"),
                 &mut previous,
             );
         }

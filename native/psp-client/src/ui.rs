@@ -4,14 +4,20 @@ pub const WIDTH: usize = 480;
 pub const HEIGHT: usize = 272;
 /// PSP Psm8888: 0xAABBGGRR, RGBA bytes in little-endian memory.
 pub type Color = u32;
-pub const BG: Color = 0xff1f1710;
-pub const PANEL: Color = 0xff38291c;
-pub const TEXT: Color = 0xfffaf5f3;
-pub const MUTED: Color = 0xffc9b9ad;
-pub const ACCENT: Color = 0xffffcba3;
-pub const ERROR: Color = 0xff9393ff;
-const LINE: Color = 0xff5a4736;
-const CHROME: Color = 0xff0f0b08;
+pub const fn rgb(value: u32) -> Color {
+    0xff000000 | (value & 255) << 16 | (value & 0xff00) | value >> 16
+}
+pub const BG: Color = rgb(0x0a0a0a);
+pub const PANEL: Color = rgb(0x111111);
+pub const SELECTED: Color = rgb(0x1c1c1c);
+pub const BUBBLE: Color = rgb(0x171717);
+pub const TEXT: Color = rgb(0xf5f5f5);
+pub const MUTED: Color = rgb(0xa3a3a3);
+pub const ACCENT: Color = rgb(0x60a5fa);
+pub const ERROR: Color = rgb(0xf87171);
+pub const AMBER: Color = rgb(0xfbbf24);
+pub const LINE: Color = rgb(0x262626);
+pub const CHROME: Color = rgb(0x000000);
 const BODY_FONT: &[u8] = include_bytes!("../assets/font14.bin");
 const SMALL_FONT: &[u8] = include_bytes!("../assets/font12.bin");
 const RECORD: usize = 329;
@@ -42,12 +48,12 @@ pub fn small_width(text: &str) -> usize {
     width(SMALL_FONT, text)
 }
 
-fn state_color(state: &str) -> Color {
-    if state.contains("Chyba") {
+pub fn state_color(state: &str) -> Color {
+    if state.contains("Error") {
         ERROR
-    } else if state.contains("Čeká") {
-        0xff85cff4
-    } else if state.contains("Běží") {
+    } else if state.contains("Waiting") {
+        AMBER
+    } else if state.contains("Working") {
         ACCENT
     } else {
         MUTED
@@ -140,6 +146,62 @@ impl Frame {
         }
     }
 
+    // Integer geometry keeps this usable on the PSP without floating-point helpers.
+    pub fn rounded(&mut self, x: i32, y: i32, w: i32, h: i32, radius: i32, color: Color) {
+        let r = radius.max(0).min(w / 2).min(h / 2);
+        for row in 0..h {
+            let dy = if row < r {
+                r - row - 1
+            } else if row >= h - r {
+                row - (h - r)
+            } else {
+                0
+            };
+            let mut dx = r;
+            while dx * dx + dy * dy > r * r {
+                dx -= 1;
+            }
+            let inset = r - dx;
+            self.rect(x + inset, y + row, w - 2 * inset, 1, color);
+        }
+    }
+    pub fn outline(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        radius: i32,
+        border: Color,
+        fill: Color,
+    ) {
+        self.rounded(x, y, w, h, radius, border);
+        self.rounded(x + 1, y + 1, w - 2, h - 2, radius - 1, fill);
+    }
+    pub fn compact_footer(&mut self, text: &str) {
+        self.rect(0, 248, 480, 24, CHROME);
+        self.rect(0, 248, 480, 1, LINE);
+        self.small(10, 252, text, MUTED);
+    }
+    pub fn connection(&mut self, end: i32, y: i32, connection: &str) {
+        if let Some((label, battery)) = connection.rsplit_once("  •  ") {
+            let battery = ellipsis(battery, 55);
+            let bx = end - small_width(&battery) as i32;
+            self.small(bx, y, &battery, MUTED);
+            let icon = bx - 24;
+            self.outline(icon, y + 5, 15, 9, 2, MUTED, BG);
+            self.rect(icon + 15, y + 7, 2, 5, MUTED);
+            if let Ok(percent) = battery.trim_end_matches('%').trim().parse::<i32>() {
+                self.rect(icon + 2, y + 7, 11 * percent.clamp(0, 100) / 100, 5, MUTED);
+            }
+            let label = ellipsis(label, 220);
+            self.small(icon - 6 - small_width(&label) as i32, y, &label, MUTED);
+        } else {
+            let text = ellipsis(connection, 300);
+            self.small(end - small_width(&text) as i32, y, &text, MUTED);
+        }
+    }
+
     fn draw_text(&mut self, mut x: i32, mut y: i32, text: &str, color: Color, font: &[u8]) {
         let origin = x;
         for ch in text.chars() {
@@ -185,14 +247,8 @@ impl Frame {
     }
     pub fn header(&mut self, title: &str, state: &str, connection: &str) {
         self.rect(0, 0, 480, 23, CHROME);
-        self.small(10, 3, "T3 PSP", TEXT);
-        let connection = ellipsis(connection, 330);
-        self.small(
-            470 - width(SMALL_FONT, &connection) as i32,
-            3,
-            &connection,
-            MUTED,
-        );
+        self.small(10, 3, "T3 Code", TEXT);
+        self.connection(470, 3, connection);
         self.rect(0, 23, 480, 33, BG);
         let state = ellipsis(state, 220);
         let state_width = width(SMALL_FONT, &state);
@@ -322,9 +378,9 @@ mod tests {
 
     #[test]
     fn state_colors_distinguish_attention_from_running() {
-        assert_ne!(state_color("Čeká"), state_color("Běží"));
-        assert_eq!(state_color("Chyba"), ERROR);
-        assert_eq!(state_color("Nečinný"), MUTED);
+        assert_ne!(state_color("Waiting"), state_color("Working"));
+        assert_eq!(state_color("Error"), ERROR);
+        assert_eq!(state_color("Idle"), MUTED);
         assert_eq!(state_color("1 / 12"), MUTED);
     }
 }

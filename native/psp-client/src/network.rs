@@ -431,7 +431,7 @@ pub fn request(config: &Config, path: &str, body: &[u8], post: bool) -> Result<S
             "Read HTTP status",
         )?;
         if status == 0 {
-            return Err("Brána neposlala platnou HTTP odpověď.".to_string());
+            return Err("The gateway returned an invalid HTTP response.".to_string());
         }
         let started = sceKernelGetSystemTimeWide();
         let mut response = Vec::new();
@@ -466,10 +466,10 @@ pub fn request(config: &Config, path: &str, body: &[u8], post: bool) -> Result<S
                 .find_map(|line| line.strip_prefix("ERROR\t"));
             return Err(match message {
                 Some(message) => format!(
-                    "Brána HTTP {status}: {}",
+                    "Gateway HTTP {status}: {}",
                     crate::model::decode_field(message)
                 ),
-                None => format!("Brána HTTP {status}"),
+                None => format!("Gateway HTTP {status}"),
             });
         }
         Ok(response)

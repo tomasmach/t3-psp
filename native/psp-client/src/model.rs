@@ -11,6 +11,53 @@ pub struct Thread {
     pub project: String,
 }
 
+/// The picker overlays the current thread; dismissing it retains its read position.
+#[derive(Default)]
+pub struct Navigation {
+    pub selected: usize,
+    pub opened: Option<Thread>,
+    pub sidebar_open: bool,
+}
+
+impl Navigation {
+    pub fn showing_threads(&self) -> bool {
+        self.sidebar_open || self.opened.is_none()
+    }
+
+    pub fn back(&mut self) {
+        if self.opened.is_some() {
+            self.sidebar_open = !self.sidebar_open;
+        }
+    }
+
+    pub fn select(&mut self, delta: isize, total: usize) {
+        self.selected = self
+            .selected
+            .saturating_add_signed(delta)
+            .min(total.saturating_sub(1));
+    }
+
+    /// Preserve the highlighted thread when the server reorders the recent list.
+    pub fn replace_threads(&mut self, threads: &mut Vec<Thread>, next: Vec<Thread>) {
+        let selected_id = threads.get(self.selected).map(|thread| &thread.id);
+        self.selected = selected_id
+            .and_then(|id| next.iter().position(|thread| &thread.id == id))
+            .unwrap_or(0);
+        *threads = next;
+    }
+
+    /// Returns true only when the caller must discard the previous thread's content.
+    pub fn open_selected(&mut self, threads: &[Thread]) -> bool {
+        let Some(thread) = threads.get(self.selected) else {
+            return false;
+        };
+        let changed = self.opened.as_ref().map(|opened| &opened.id) != Some(&thread.id);
+        self.opened = Some(thread.clone());
+        self.sidebar_open = false;
+        changed
+    }
+}
+
 pub fn decode_field(value: &str) -> String {
     let mut out = String::new();
     let mut chars = value.chars();
@@ -39,7 +86,7 @@ pub fn append_transcript(draft: &mut String, text: &str) -> Result<(), String> {
     let separator = usize::from(!draft.is_empty());
     if draft.len() + separator + text.len() > MAX_DRAFT_BYTES {
         return Err(String::from(
-            "Přepis se nevejde do konceptu (limit 60 kB). Nic nebylo zkráceno ani odesláno.",
+            "The transcript exceeds the 60 kB draft limit. Nothing was truncated or sent.",
         ));
     }
     if separator != 0 {
@@ -156,15 +203,60 @@ impl ThreadViews {
             &mut self.messages
         }
     }
-
-    pub fn toggle(&mut self) {
-        self.activity = !self.activity;
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn drawer_dismissal_and_reselection_preserve_the_open_thread() {
+        let threads =
+            parse_threads("THREAD\ta\trunning\tFirst\tProject\nTHREAD\tb\tidle\tSecond\tProject\n");
+        let mut navigation = Navigation::default();
+        assert!(navigation.showing_threads());
+        navigation.back();
+        assert!(navigation.showing_threads());
+        assert!(!navigation.open_selected(&[]));
+        assert!(navigation.open_selected(&threads));
+        assert!(!navigation.showing_threads());
+        navigation.back();
+        navigation.select(1, threads.len());
+        navigation.back();
+        assert_eq!(navigation.opened.as_ref().unwrap().id, "a");
+        assert!(!navigation.showing_threads());
+        navigation.back();
+        navigation.select(-1, threads.len());
+        assert!(!navigation.open_selected(&threads));
+        assert!(!navigation.showing_threads());
+        navigation.back();
+        navigation.select(1, threads.len());
+        assert!(navigation.open_selected(&threads));
+        assert_eq!(navigation.opened.as_ref().unwrap().id, "b");
+    }
+
+    #[test]
+    fn refreshing_picker_keeps_selection_by_id_and_handles_disappearing_threads() {
+        let mut threads = parse_threads("THREAD\ta\tidle\tFirst\nTHREAD\tb\tidle\tSecond\n");
+        let mut navigation = Navigation::default();
+        navigation.select(1, threads.len());
+        assert!(navigation.open_selected(&threads));
+        navigation.back();
+        navigation.replace_threads(
+            &mut threads,
+            parse_threads("THREAD\tb\trunning\tSecond\nTHREAD\ta\tidle\tFirst\n"),
+        );
+        assert_eq!(navigation.selected, 0);
+        assert!(!navigation.open_selected(&threads));
+        assert_eq!(navigation.opened.as_ref().unwrap().status, "running");
+        navigation.back();
+        navigation.replace_threads(&mut threads, Vec::new());
+        navigation.select(1, threads.len());
+        assert_eq!(navigation.selected, 0);
+        assert!(!navigation.open_selected(&threads));
+        navigation.back();
+        assert_eq!(navigation.opened.as_ref().unwrap().id, "b");
+        assert!(!navigation.showing_threads());
+    }
     #[test]
     fn fields_and_utf8() {
         let threads = parse_threads("THREAD\tabc-123\trunning\tČeský\\tthread\\nhello\\\\end\n");
@@ -190,18 +282,18 @@ mod tests {
         views.messages.update(50, 7);
         views.messages.move_by(-10, 50, 7);
         assert_eq!(views.messages.offset, 33);
-        views.toggle();
+        views.activity = !views.activity;
         views.current_mut().update(20, 8);
         assert_eq!(views.current().offset, 12);
         views.current_mut().move_by(-3, 20, 8);
-        views.toggle();
+        views.activity = !views.activity;
         views.current_mut().update(55, 7);
         assert_eq!(views.current().offset, 33);
         assert!(!views.current().follow);
         views.current_mut().follow = true;
         views.current_mut().update(55, 7);
         assert_eq!(views.current().offset, 48);
-        views.toggle();
+        views.activity = !views.activity;
         assert_eq!(views.current().offset, 9);
         assert!(!views.current().follow);
     }

@@ -1,5 +1,7 @@
 // Host-side renderer: these are the same pixels, fonts and layouts used by the EBOOT.
 extern crate alloc;
+#[path = "../src/input.rs"]
+mod input;
 #[path = "../src/model.rs"]
 mod model;
 #[path = "../src/ui.rs"]
@@ -23,17 +25,25 @@ fn save(frame: &ui::Frame, name: &str) {
 
 fn main() {
     let threads = model::parse_threads(
-        "THREAD\tpsp\trunning\tHlasové ovládání PSP\tT3 Code\nTHREAD\tapple\twaiting\tPřihlášení přes Apple\tMobilní aplikace\nTHREAD\treviews\tidle\tPřehled recenzí\tWebová aplikace\nTHREAD\tfilter\tidle\tFiltr otevřených podniků\tMobilní aplikace\n",
+        "THREAD\tpsp\trunning\tPSP voice prompts\tT3 Code\nTHREAD\tapple\twaiting\tSign in with Apple\tMobile app\nTHREAD\treviews\tidle\tReview dashboard\tWeb app\nTHREAD\tfilter\tidle\tFilter open venues\tMobile app\n",
     );
     let detail = model::parse_detail(
-        "MSG\tuser\tZkontroluj odesílání hlasových promptů.\nMSG\tassistant\tNahrávka už dorazila na počítač. Teď ověřím přepis a odeslání do správného threadu.\nACT\tAudio přijato z PSP\nACT\tSpouštím test odeslání promptu\nACT\tČtu soubor apps/psp-gateway/src/gateway.ts\n",
+        "MSG\tuser\tCheck voice prompt submission.\nMSG\tassistant\tThe recording reached the desktop. I will check the transcript and send it to the correct thread.\nACT\tAudio received from PSP\nACT\tTesting prompt submission\nACT\tReading apps/psp-gateway/src/gateway.ts\n",
     );
-    let draft =
-        "Zvětši písmo v seznamu threadů. Stav agenta nech vpravo a přidej možnost přerušit běh.";
-    let connection = "Připojeno  •  76 %";
+    let draft = "Increase the text size in the thread list. Keep the agent status on the right and add a stop action.";
+    let connection = "Connected  •  76 %";
     let mut frame = ui::Frame::new();
     views::thread_list(&mut frame, &threads, 0, &[], connection, "");
     save(&frame, "threads");
+    views::thread_list(
+        &mut frame,
+        &threads,
+        0,
+        &[],
+        "Gateway offline  •  76 %",
+        "Gateway not responding. SELECT: connections.",
+    );
+    save(&frame, "threads-offline");
     let messages = views::lines(&detail, false);
     let activities = views::lines(&detail, true);
     let mut state = model::ThreadViews::default();
@@ -48,10 +58,13 @@ fn main() {
         connection,
         "",
         false,
+        "",
     );
     save(&frame, "messages");
+    views::thread_drawer(&mut frame, &threads, 0, &[], "");
+    save(&frame, "drawer");
     let saved = state.messages.clone();
-    state.toggle();
+    state.activity = !state.activity;
     state
         .current_mut()
         .update(activities.len(), views::ACTIVITY_ROWS);
@@ -65,9 +78,10 @@ fn main() {
         connection,
         "",
         false,
+        "",
     );
     save(&frame, "activity");
-    state.toggle();
+    state.activity = !state.activity;
     assert_eq!(*state.current(), saved);
     views::composer(
         &mut frame,
@@ -101,12 +115,14 @@ fn main() {
         connection,
     );
     save(&frame, "recording");
+    views::stop_confirmation(&mut frame, &threads[0]);
+    save(&frame, "stop-confirmation");
     views::notice(
         &mut frame,
-        "Hlasové ovládání PSP",
-        "Přepisuji na počítači…",
-        "Čekej prosím…",
-        "HOME Ukončit",
+        "PSP voice prompts",
+        "Transcribing on desktop…",
+        "Please wait…",
+        "HOME Exit",
         connection,
     );
     save(&frame, "transcribing");
@@ -117,17 +133,140 @@ fn main() {
         state.current(),
         false,
         "",
-        "Bez spojení s bránou  •  76 %",
-        "Brána neodpovídá. SELECT: připojení.",
+        "Gateway offline  •  76 %",
+        "Gateway not responding. SELECT: connections.",
         false,
+        draft,
     );
     save(&frame, "offline");
-    // Important controls must fit without clipping even with Czech diacritics.
+    views::thread_list(&mut frame, &[], 0, &[], connection, "");
+    save(&frame, "empty");
+    views::conversation(
+        &mut frame,
+        &threads[1],
+        &messages,
+        &model::Viewport::default(),
+        false,
+        "",
+        connection,
+        "",
+        false,
+        "",
+    );
+    save(&frame, "waiting");
+    let long_detail = model::Detail {
+        messages: vec![
+            (
+                String::from("user"),
+                "Check the entire long prompt. Keep every word and preserve its order. ".repeat(15),
+            ),
+            (
+                String::from("assistant"),
+                "Response to the long prompt.".into(),
+            ),
+        ],
+        activities: Vec::new(),
+    };
+    let long_lines = views::lines(&long_detail, false);
+    let history = model::Viewport {
+        offset: 3,
+        follow: false,
+    };
+    views::conversation(
+        &mut frame,
+        &threads[0],
+        &long_lines,
+        &history,
+        false,
+        "",
+        connection,
+        "",
+        true,
+        draft,
+    );
+    save(&frame, "history");
+    let before_drawer = frame.pixels.clone();
+    let mut navigation = model::Navigation::default();
+    assert!(navigation.open_selected(&threads));
+    navigation.back();
+    views::thread_drawer(&mut frame, &threads, navigation.selected, &[], "");
+    navigation.back();
+    views::conversation(
+        &mut frame,
+        navigation.opened.as_ref().unwrap(),
+        &long_lines,
+        &history,
+        false,
+        "",
+        connection,
+        "",
+        true,
+        draft,
+    );
+    assert_eq!(
+        frame.pixels, before_drawer,
+        "Closing the drawer changed the visible history"
+    );
+    save(&frame, "history-return");
+    let many_threads: Vec<_> = (0..32)
+        .map(|index| model::Thread {
+            id: format!("thread-{index}"),
+            title: format!("{index}: A very long thread title that must fit in the sidebar"),
+            project: format!("Project {}", index / 2),
+            status: String::from(if index % 3 == 0 { "waiting" } else { "running" }),
+        })
+        .collect();
+    views::thread_drawer(
+        &mut frame,
+        &many_threads,
+        31,
+        &[(many_threads[31].id.clone(), draft.into())],
+        "",
+    );
+    save(&frame, "drawer-long");
+    views::conversation(
+        &mut frame,
+        &threads[0],
+        &long_lines,
+        &history,
+        false,
+        "",
+        connection,
+        "",
+        true,
+        draft,
+    );
+    views::thread_drawer(
+        &mut frame,
+        &many_threads,
+        30,
+        &[(many_threads[30].id.clone(), draft.into())],
+        "",
+    );
+    save(&frame, "drawer-waiting-draft");
+    views::composer(&mut frame, &threads[0], "", 0, false, 0, false, connection);
+    save(&frame, "draft-empty");
+    views::composer(&mut frame, &threads[0], "", 0, true, 0, false, connection);
+    save(&frame, "keyboard-empty");
+    views::composer(
+        &mut frame,
+        &threads[0],
+        draft,
+        0,
+        true,
+        views::KEYS.len() - 1,
+        false,
+        connection,
+    );
+    save(&frame, "keyboard-last");
+    // Controller hints must fit at the native font size.
     for text in [
-        "L Aktivita    □ Hlas    × Prompt    ○ Zpět",
-        "↑↓ Posun    R Nejnovější    △ + START Přerušit",
-        "START Odeslat    × Upravit    □ Přidat hlas",
-        "Nahrávání skončí až dalším stiskem □.",
+        "↑↓ / Analog Scroll    ←→ Page    △ Latest    ○ Threads",
+        "↑↓ / Analog Select    ←→ Page    × Open    ○ Close",
+        "↑↓ / Analog Select   ←→ Page   × Open   SELECT Wi-Fi",
+        "↑↓←→ Select   × Type   □ Delete   △ Aa",
+        "Analog / L/R Scroll text   ○ Review draft",
+        "↑↓ / Analog Scroll    ←→ Page    ○ Back (draft kept)",
     ] {
         assert!(ui::small_width(text) <= 460, "Footer too wide: {text}");
     }

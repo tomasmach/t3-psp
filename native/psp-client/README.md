@@ -18,26 +18,33 @@ Run the [desktop gateway](https://github.com/tomasmach/t3-psp/blob/psp/apps/psp-
 
 ## Controls
 
-| Screen                | Control                    | Action                                                     |
-| --------------------- | -------------------------- | ---------------------------------------------------------- |
-| Threads               | D-pad / X                  | Select / open                                              |
-| Thread                | Up / Down / R              | Scroll / follow latest                                     |
-| Thread                | L                          | Switch messages / activity; each keeps its scroll position |
-| Thread                | X                          | Compose prompt                                             |
-| Thread                | Square                     | Record a voice prompt directly                             |
-| Thread                | Hold Triangle, press Start | Request interruption                                       |
-| Thread                | Circle                     | Back to threads                                            |
-| Composer              | Square                     | Start recording                                            |
-| Composer              | Up / Down / X              | Scroll draft / open keyboard                               |
-| Composer              | Start / Circle             | Send reviewed draft / return without discarding            |
-| Keyboard              | D-pad / X / Triangle       | Select character / append / backspace                      |
-| Keyboard              | L / R / Select             | Scroll draft / switch letter case                          |
-| Keyboard              | Circle                     | Return to transcript review                                |
-| Recording             | Square / Circle            | Stop and transcribe / cancel                               |
-| Thread list or detail | Select                     | Select a saved Wi-Fi profile and reconnect                 |
-| Any screen            | Home                       | Exit                                                       |
+| Screen                   | Control             | Action                                                            |
+| ------------------------ | ------------------- | ----------------------------------------------------------------- |
+| Lists / thread / draft   | Up / Down or analog | Move one item or line; hold to keep moving                        |
+| Lists / thread / draft   | Left / Right        | Move back / forward by a page (four items in lists)               |
+| Threads                  | X                   | Open selected thread                                              |
+| Thread                   | L / R               | Messages / activity; each keeps its scroll position               |
+| Thread                   | Triangle            | Load and follow the latest content                                |
+| Thread                   | X                   | Write a prompt, or review this thread's saved draft               |
+| Thread / draft review    | Square              | Record a voice prompt                                             |
+| Working / waiting thread | Start, then X       | Confirm an interruption request; Circle cancels                   |
+| Thread                   | Circle              | Open the thread sidebar                                           |
+| Thread sidebar           | X / Circle          | Open selected thread / return without losing the reading position |
+| Draft review             | X                   | Edit with the keyboard                                            |
+| Draft review             | Start / Circle      | Send reviewed draft / return with draft kept                      |
+| Keyboard                 | D-pad / X           | Select character / type; directions wrap within the row or column |
+| Keyboard                 | Square / Triangle   | Backspace (hold to keep deleting) / switch letter case            |
+| Keyboard                 | Analog or L / R     | Scroll draft text                                                 |
+| Keyboard                 | Circle              | Return to draft review; Start does not send from the keyboard     |
+| Recording                | Square / Circle     | Stop and transcribe / cancel                                      |
+| Thread list or detail    | Select              | Open Wi-Fi profiles; Circle returns without reconnecting          |
+| Wi-Fi profiles           | X                   | Connect to the selected saved profile                             |
+| Dialog                   | Circle / X          | Back / acknowledge                                                |
+| Any screen               | Home                | Exit                                                              |
 
-The MVP polls every two seconds and shows up to 32 recent unarchived threads, the latest eight messages and five activity summaries. Reading history freezes that view; R loads the newest content. Use the desktop for older history, approvals, and structured questions. Drafts stay with their thread until sent or the app exits. Requests block input while waiting; errors have timeouts, and a failed send retains the draft without automatic retry. Check the desktop thread before manually resending an ambiguous request.
+The MVP polls every two seconds and shows up to 32 recent unarchived threads, the latest eight messages and five activity summaries. Circle opens the thread sidebar; closing it or reopening the same thread keeps your reading position. Reading history freezes that view; Triangle loads the newest content. Use the desktop for older history, approvals, and structured questions. Drafts stay with their thread until sent or the app exits. Requests block input while waiting; errors have timeouts, and a failed send retains the draft without automatic retry. Check the desktop thread before manually resending an ambiguous request.
+
+The analog stick has a center dead zone and scrolls faster when pushed farther. D-pad navigation and keyboard backspace repeat after a short hold; other actions never repeatedly type, record, send, or stop the agent. Returning from a dialog or recording requires a fresh action press.
 
 Recording continues until Square is pressed again; Circle discards it. Audio uploads in small blocks while recording, with a bounded queue on the PSP and temporary storage on the desktop. There is no fixed recording-duration limit. Desktop disk space and transcription resources remain finite, and transcripts/prompts are limited to 60,000 UTF-8 bytes. A full upload queue or connection failure cancels the recording explicitly; audio is never silently dropped. Stopping includes the remainder of the current microphone block (at most about 0.4 seconds). Transcripts always require a separate Start press before sending.
 
