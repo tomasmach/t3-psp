@@ -1,3 +1,11 @@
+# T3 PSP — unofficial fork
+
+Native PSP-3000 remote UI for [T3 Code](https://github.com/pingdotgg/t3code). Agents and speech recognition stay on your desktop. Maintained independently by [Tomáš Mach](https://github.com/tomasmach); not an official T3 Tools or Sony product.
+
+**[PSP setup and upstream updates](PSP.md)** · [Native client](native/psp-client/README.md) · [Desktop gateway](apps/psp-gateway/README.md)
+
+Experimental: thread browsing, live messages/activity, reviewed voice prompts and interruption are implemented. Speech accuracy and device/network compatibility still need testing. The `psp` branch contains this fork; `main` is reserved for unmodified upstream code. Upstream's original documentation follows.
+
 # T3 Code
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).

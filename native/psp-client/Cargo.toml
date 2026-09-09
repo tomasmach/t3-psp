@@ -1,0 +1,15 @@
+[package]
+name = "t3-psp-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[dependencies]
+psp = "=0.3.13"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = true

@@ -1,0 +1,75 @@
+name: PSP
+
+on:
+  push:
+    branches: [psp, "chore/update-t3-*"]
+    paths:
+      - "native/psp-client/**"
+      - "apps/psp-gateway/**"
+      - "packages/contracts/**"
+      - "packages/shared/**"
+      - "apps/server/**"
+      - "*lock*"
+      - "package.json"
+      - "pnpm-workspace.yaml"
+      - "tsconfig*.json"
+      - "vite.config.*"
+      - ".github/workflows/psp.yml"
+  pull_request:
+    branches: [psp]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: psp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway:
+    if: github.repository == 'tomasmach/t3-psp'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15 # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Test gateway HTTP flows
+        run: node --test apps/psp-gateway/src/*.test.ts
+      - name: Check gateway types and lint
+        run: |
+          vp exec tsc --noEmit -p apps/psp-gateway/tsconfig.json
+          vp lint apps/psp-gateway/src
+
+  native:
+    if: github.repository == 'tomasmach/t3-psp'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: native/psp-client
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install pinned PSP build tools
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup show active-toolchain
+          rustup component add rust-docs
+          cargo install cargo-psp --version 0.2.9 --locked
+      - name: Test and build EBOOT
+        run: bash tools/check.sh
+      - name: Package with license notices
+        id: package
+        run: |
+          artifact_path="$(bash tools/package.sh)"
+          echo "path=$artifact_path" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: t3-psp
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30

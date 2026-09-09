@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ESNext", "DOM"],
+    // This Node HTTP process uses Effect only to validate shared wire contracts.
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnosticSeverity": {
+          "nodeBuiltinImport": "off",
+          "globalFetch": "off",
+          "globalDate": "off",
+          "globalConsole": "off",
+          "globalTimers": "off"
+        }
+      }
+    ]
+  },
+  "include": ["src"]
+}

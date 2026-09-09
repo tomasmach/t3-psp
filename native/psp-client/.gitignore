@@ -1,0 +1,7 @@
+gateway.cfg
+wifi.cfg
+*.pcm
+*.wav
+*.mp3
+*.log
+/target/
