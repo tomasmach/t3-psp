@@ -22,7 +22,7 @@ Custom PSP firmware, CXMB, Windows XP themes, speech models and recordings are n
 
 ## Update from T3 Code
 
-Keep `main` identical to upstream. Develop and release the PSP changes from `psp` (the default branch). This preserves normal Git history and makes conflicts visible. Do not use GitHub's **discard changes** option on `psp` or force-push an upstream branch over it.
+Keep `main` identical to upstream. Develop and release the PSP changes from `psp` (the default branch). This preserves normal Git history and makes conflicts visible. Both branches are protected against deletion and force-pushes in this fork. Do not use GitHub's **discard changes** option on `psp` or force-push an upstream branch over it.
 
 In a fresh clone, add the original repository once:
 
@@ -53,4 +53,4 @@ This development worktree keeps `origin` pointing to `pingdotgg/t3code` and uses
 
 T3 Code remains under its original [MIT license](LICENSE), including copyright © 2026 T3 Tools Inc. The PSP additions are also MIT-licensed. Existing upstream notices remain in place. [PSP third-party notices](native/psp-client/THIRD_PARTY_NOTICES.md) describe the fonts and linked runtime dependencies; packaged builds include their license texts. This fork does not claim ownership of T3 Code, PSP trademarks or third-party themes.
 
-Upstream release/deployment workflows are not part of the PSP release process. The PSP workflow builds a downloadable artifact and never deploys to a desktop or device. A passing build is not a hardware compatibility guarantee.
+Inherited workflows are disabled in this fork's GitHub Actions settings; their source files stay unchanged to reduce merge conflicts. After an upstream update, check for newly added workflows and keep upstream deployment/release jobs disabled. Only the **PSP** workflow is enabled here. It builds a downloadable artifact and never deploys to a desktop or device. A passing build is not a hardware compatibility guarantee.
